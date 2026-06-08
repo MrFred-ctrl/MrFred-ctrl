@@ -20,6 +20,7 @@ from rich.text import Text
 from spacex import get_upcoming_launch, get_latest_launch, get_launch_info
 from tesla import get_stock_data
 from news import get_headlines
+from ipo_alert import get_ipo_alerts
 
 
 console = Console()
@@ -160,6 +161,97 @@ def build_news_panel():
     )
 
 
+def build_ipo_panel():
+    """Build the IPO / SEC S-1 alert panel."""
+    alerts = get_ipo_alerts()
+    filings = alerts["filings"]
+    headlines = alerts["headlines"]
+    checked_at = alerts["checked_at"]
+
+    from rich.console import Group as RichGroup
+
+    renderables = []
+
+    # ---- SEC filings block ------------------------------------------------
+    if filings:
+        filing_table = Table(
+            box=box.SIMPLE_HEAVY,
+            expand=True,
+            show_header=True,
+            header_style="bold bright_red",
+        )
+        filing_table.add_column("Form", style="bold bright_yellow", width=8, no_wrap=True)
+        filing_table.add_column("Filer", style="bold white", max_width=40, no_wrap=True)
+        filing_table.add_column("Date", style="bright_yellow", width=12, no_wrap=True)
+        filing_table.add_column("Search Term", style="dim", width=12, no_wrap=True)
+
+        for f in filings:
+            filing_table.add_row(
+                f.get("form_type", "S-1"),
+                f.get("filer", "Unknown"),
+                f.get("date", "Unknown"),
+                f.get("label", ""),
+            )
+        renderables.append(
+            Panel(
+                filing_table,
+                title="[bold bright_red] *** SEC S-1 FILINGS DETECTED *** [/bold bright_red]",
+                border_style="bright_red",
+                expand=True,
+            )
+        )
+
+    # ---- IPO news headlines block -----------------------------------------
+    if headlines:
+        news_table = Table(
+            box=box.SIMPLE,
+            expand=True,
+            show_header=True,
+            header_style="bold yellow",
+        )
+        news_table.add_column("Headline", style="yellow", max_width=80, no_wrap=True)
+        news_table.add_column("Source", style="dim cyan", width=22, no_wrap=True)
+
+        for h in headlines:
+            title = h["title"]
+            if len(title) > 80:
+                title = title[:77] + "..."
+            news_table.add_row(title, h.get("source", ""))
+        renderables.append(
+            Panel(
+                news_table,
+                title="[bold yellow] IPO-Related News [/bold yellow]",
+                border_style="yellow",
+                expand=True,
+            )
+        )
+
+    # ---- All-clear status -------------------------------------------------
+    if not filings and not headlines:
+        clear_text = Text(
+            f"No IPO filings or news detected.  Last checked: {checked_at}",
+            style="bold green",
+            justify="center",
+        )
+        return Panel(
+            clear_text,
+            title="[bold white on dark_green] IPO ALERT — SpaceX / Starlink [/bold white on dark_green]",
+            border_style="green",
+            expand=True,
+        )
+
+    # Determine outer border color based on severity
+    outer_border = "bright_red" if filings else "yellow"
+    return Panel(
+        RichGroup(*renderables),
+        title="[bold white on dark_red] IPO ALERT — SpaceX / Starlink [/bold white on dark_red]"
+        if filings
+        else "[bold white on dark_orange] IPO ALERT — SpaceX / Starlink [/bold white on dark_orange]",
+        border_style=outer_border,
+        expand=True,
+    )
+
+
 def build_footer():
     """Build a footer with the last updated timestamp."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -191,6 +283,7 @@ def render_dashboard():
         Layout(name="title", size=3),
         Layout(name="top_row", size=20),
         Layout(name="news", size=14),
+        Layout(name="ipo", size=7),
         Layout(name="footer", size=3),
     )
     layout["top_row"].split_row(
@@ -202,6 +295,7 @@ def render_dashboard():
     layout["spacex"].update(build_spacex_panel())
     layout["tesla"].update(build_tesla_panel())
     layout["news"].update(build_news_panel())
+    layout["ipo"].update(build_ipo_panel())
     layout["footer"].update(build_footer())
 
     return layout
