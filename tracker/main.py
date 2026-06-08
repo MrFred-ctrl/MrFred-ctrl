@@ -2,6 +2,8 @@
 SpaceX / Tesla / Boring Company Terminal Dashboard
 Run: python main.py
      python main.py --refresh 30
+     python main.py --email
+     python main.py --refresh 300 --email
 """
 
 import argparse
@@ -18,9 +20,10 @@ from rich.table import Table
 from rich.text import Text
 
 from spacex import get_upcoming_launch, get_latest_launch, get_launch_info
-from tesla import get_stock_data
+from tesla import get_stock_data, get_spcx_data
 from news import get_headlines
 from ipo_alert import get_ipo_alerts
+from alerts import check_and_alert
 
 
 console = Console()
@@ -86,45 +89,65 @@ def build_spacex_panel():
     )
 
 
-def build_tesla_panel():
-    """Build the Tesla stock panel."""
-    data = get_stock_data()
-
-    table = Table(box=box.SIMPLE, show_header=False, expand=True)
-    table.add_column("Field", style="bold cyan", width=18)
-    table.add_column("Value", style="white")
+def _stock_rows(table: Table, data: dict) -> None:
+    """Add price/change rows for a single ticker to *table*."""
+    ticker = data.get("symbol", "?")
 
     if not data.get("available"):
-        table.add_row("Status", "[red]Unavailable — market may be closed or network error[/red]")
-    else:
-        price = data["price"]
-        change = data["change"]
-        pct = data["pct_change"]
+        if ticker == "SPCX":
+            table.add_row(
+                f"[dim]{ticker}[/dim]",
+                "[dim]Not yet publicly tradeable[/dim]",
+                "",
+                "",
+                "",
+                "",
+            )
+        else:
+            table.add_row(
+                f"[bold white]{ticker}[/bold white]",
+                "[red]Unavailable — market may be closed or network error[/red]",
+                "", "", "", "",
+            )
+        return
 
-        # Color based on direction
-        color = "green" if change >= 0 else "red"
-        arrow = "▲" if change >= 0 else "▼"
-        sign = "+" if change >= 0 else ""
+    price = data["price"]
+    change = data["change"]
+    pct = data["pct_change"]
 
-        table.add_row("Ticker", "[bold white]TSLA[/bold white]")
-        table.add_row(
-            "Price",
-            f"[bold {color}]${price:,.2f}[/bold {color}]",
-        )
-        table.add_row(
-            "Change",
-            f"[{color}]{arrow} {sign}{change:,.2f}  ({sign}{pct:.2f}%)[/{color}]",
-        )
-        if data["day_high"]:
-            table.add_row("Day High", f"${data['day_high']:,.2f}")
-        if data["day_low"]:
-            table.add_row("Day Low", f"${data['day_low']:,.2f}")
-        if data["volume"]:
-            table.add_row("Volume", f"{data['volume']:,}")
+    color = "green" if change >= 0 else "red"
+    arrow = "▲" if change >= 0 else "▼"
+    sign = "+" if change >= 0 else ""
+
+    table.add_row(
+        f"[bold white]{ticker}[/bold white]",
+        f"[bold {color}]${price:,.2f}[/bold {color}]",
+        f"[{color}]{arrow} {sign}{change:,.2f}  ({sign}{pct:.2f}%)[/{color}]",
+        f"${data['day_high']:,.2f}" if data.get("day_high") else "",
+        f"${data['day_low']:,.2f}" if data.get("day_low") else "",
+        f"{data['volume']:,}" if data.get("volume") else "",
+    )
+
+
+def build_stocks_panel():
+    """Build the stocks panel showing TSLA and SPCX."""
+    tsla = get_stock_data("TSLA")
+    spcx = get_spcx_data()
+
+    table = Table(box=box.SIMPLE, show_header=True, expand=True, header_style="bold cyan")
+    table.add_column("Ticker", style="bold cyan", width=8, no_wrap=True)
+    table.add_column("Price", style="white", width=14, no_wrap=True)
+    table.add_column("Change", style="white", width=24, no_wrap=True)
+    table.add_column("Day High", style="white", width=12, no_wrap=True)
+    table.add_column("Day Low", style="white", width=12, no_wrap=True)
+    table.add_column("Volume", style="white", width=14, no_wrap=True)
+
+    _stock_rows(table, tsla)
+    _stock_rows(table, spcx)
 
     return Panel(
         table,
-        title="[bold white on red] TESLA (TSLA) [/bold white on red]",
+        title="[bold white on red] STOCKS [/bold white on red]",
         border_style="red",
         expand=True,
     )
@@ -161,9 +184,12 @@ def build_news_panel():
     )
 
 
-def build_ipo_panel():
-    """Build the IPO / SEC S-1 alert panel."""
-    alerts = get_ipo_alerts()
+def build_ipo_panel(alerts: dict):
+    """Build the IPO / SEC S-1 alert panel.
+
+    Args:
+        alerts: dict returned by ``get_ipo_alerts()``.
+    """
     filings = alerts["filings"]
     headlines = alerts["headlines"]
     checked_at = alerts["checked_at"]
@@ -184,13 +210,16 @@ def build_ipo_panel():
         filing_table.add_column("Filer", style="bold white", max_width=40, no_wrap=True)
         filing_table.add_column("Date", style="bright_yellow", width=12, no_wrap=True)
         filing_table.add_column("Search Term", style="dim", width=12, no_wrap=True)
+        filing_table.add_column("", width=7, no_wrap=True)  # NEW badge column
 
         for f in filings:
+            new_badge = "[bold red]\\[NEW][/bold red]" if f.get("is_new") else ""
             filing_table.add_row(
                 f.get("form_type", "S-1"),
                 f.get("filer", "Unknown"),
                 f.get("date", "Unknown"),
                 f.get("label", ""),
+                new_badge,
             )
         renderables.append(
             Panel(
@@ -276,8 +305,19 @@ def build_title():
 # Dashboard renderer
 # ---------------------------------------------------------------------------
 
-def render_dashboard():
-    """Assemble and return a renderable dashboard."""
+def render_dashboard(email_alerts: bool = False):
+    """Assemble and return a renderable dashboard.
+
+    Args:
+        email_alerts: When True, fire email alerts for new filings/headlines.
+    """
+    # Fetch IPO alerts once so we can reuse the result for both the panel
+    # and the email checker.
+    ipo_data = get_ipo_alerts()
+
+    if email_alerts:
+        check_and_alert(ipo_data)
+
     layout = Layout()
     layout.split_column(
         Layout(name="title", size=3),
@@ -288,14 +328,14 @@ def render_dashboard():
     )
     layout["top_row"].split_row(
         Layout(name="spacex"),
-        Layout(name="tesla"),
+        Layout(name="stocks"),
     )
 
     layout["title"].update(build_title())
     layout["spacex"].update(build_spacex_panel())
-    layout["tesla"].update(build_tesla_panel())
+    layout["stocks"].update(build_stocks_panel())
     layout["news"].update(build_news_panel())
-    layout["ipo"].update(build_ipo_panel())
+    layout["ipo"].update(build_ipo_panel(ipo_data))
     layout["footer"].update(build_footer())
 
     return layout
@@ -316,15 +356,26 @@ def main():
         metavar="N",
         help="Refresh interval in seconds (0 = run once and exit)",
     )
+    parser.add_argument(
+        "--email",
+        action="store_true",
+        default=False,
+        help="Enable email alerts for new SEC filings and IPO headlines",
+    )
     args = parser.parse_args()
 
     if args.refresh > 0:
-        with Live(render_dashboard(), console=console, screen=True, refresh_per_second=1) as live:
+        with Live(
+            render_dashboard(email_alerts=args.email),
+            console=console,
+            screen=True,
+            refresh_per_second=1,
+        ) as live:
             while True:
                 time.sleep(args.refresh)
-                live.update(render_dashboard())
+                live.update(render_dashboard(email_alerts=args.email))
     else:
-        console.print(render_dashboard())
+        console.print(render_dashboard(email_alerts=args.email))
 
 
 if __name__ == "__main__":

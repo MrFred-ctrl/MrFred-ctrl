@@ -1,16 +1,22 @@
-"""Tesla (TSLA) stock data via yfinance."""
+"""Stock data via yfinance — TSLA and SPCX."""
 
 import yfinance as yf
 
 
-TICKER = "TSLA"
+# ---------------------------------------------------------------------------
+# Generic helper
+# ---------------------------------------------------------------------------
 
+def get_stock_data(ticker: str = "TSLA") -> dict:
+    """Return a dict with current stock info for *ticker*.
 
-def get_stock_data():
-    """Return a dict with current TSLA stock info."""
+    Works for any symbol supported by yfinance.  If data is unavailable
+    (e.g. the ticker does not yet trade publicly) the returned dict will
+    have ``available: False``.
+    """
     try:
-        ticker = yf.Ticker(TICKER)
-        info = ticker.fast_info
+        t = yf.Ticker(ticker)
+        info = t.fast_info
 
         price = getattr(info, "last_price", None)
         prev_close = getattr(info, "previous_close", None)
@@ -20,9 +26,9 @@ def get_stock_data():
 
         if price is None or prev_close is None:
             # Fallback: try history
-            hist = ticker.history(period="2d")
+            hist = t.history(period="2d")
             if hist.empty:
-                return _unavailable()
+                return _unavailable(ticker)
             price = float(hist["Close"].iloc[-1])
             prev_close = float(hist["Close"].iloc[-2]) if len(hist) > 1 else price
             day_high = float(hist["High"].iloc[-1])
@@ -33,7 +39,7 @@ def get_stock_data():
         pct_change = (change / float(prev_close)) * 100 if prev_close else 0.0
 
         return {
-            "symbol": TICKER,
+            "symbol": ticker,
             "price": round(float(price), 2),
             "change": round(change, 2),
             "pct_change": round(pct_change, 2),
@@ -43,12 +49,12 @@ def get_stock_data():
             "available": True,
         }
     except Exception:
-        return _unavailable()
+        return _unavailable(ticker)
 
 
-def _unavailable():
+def _unavailable(ticker: str = "TSLA") -> dict:
     return {
-        "symbol": TICKER,
+        "symbol": ticker,
         "price": None,
         "change": None,
         "pct_change": None,
@@ -57,3 +63,22 @@ def _unavailable():
         "volume": None,
         "available": False,
     }
+
+
+# ---------------------------------------------------------------------------
+# Convenience wrappers
+# ---------------------------------------------------------------------------
+
+def get_tsla_data() -> dict:
+    """Return TSLA stock data."""
+    return get_stock_data("TSLA")
+
+
+def get_spcx_data() -> dict:
+    """Return SPCX ETF data.
+
+    SPCX is an ETF with SpaceX exposure.  If yfinance returns no price data
+    (e.g. the ETF is not yet tradeable), the returned dict will have
+    ``available: False``.
+    """
+    return get_stock_data("SPCX")
