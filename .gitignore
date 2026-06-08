@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+seen_filings.json
+seen_headlines.json
